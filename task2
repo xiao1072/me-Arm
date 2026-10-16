@@ -1,0 +1,126 @@
+#include<Servo.h>
+  Servo base,farm,rarm,claw;
+  const int bmax = 180;
+  const int bmin = 0;
+  const int formax = 130;
+  const int formin = 40;
+  const int rmax = 110;
+  const int rmin = 20;
+  const int cmax = 100;
+  const int cmin = 25;
+  const int pin_b = 11;
+  const int pin_r = 10;
+  const int pin_f = 9;
+  const int pin_c = 5;
+  bool m = 0; 
+  struct jservo {
+  Servo servo;
+  int pin, min, max, pos;
+  };
+
+jservo tservo[4] = {
+  {Servo(), pin_b, 0 , 180 , 90 },
+  {Servo(), pin_r, 20 , 160 , 90 },
+  {Servo(), pin_f, 20 , 160 , 90 },
+  {Servo(), pin_c, 20 , 100 , 40 },
+  };
+void setup() {
+  for (int i = 0; i < 4; i++) {
+    tservo[i].servo.attach(tservo[i].pin);
+    delay(200);
+    tservo[i].servo.write(tservo[i].pos);
+    delay(10);
+  }
+  delay(20);
+  restart();
+  Serial.begin(9600);
+}
+
+void loop() {
+  if(Serial.available() > 0){
+    char cmd = Serial.read();
+    if(cmd == 'A' || cmd == 'B' || cmd == 'C')
+      pick(cmd);
+  }
+  delay(200);
+}
+
+void move(int b, int r, int f, int c, int sdelay = 15) {
+  int tgt[4] = {b, r, f, c};
+  bool done[4] = {false, false, false, false};
+  for (int i = 0; i < 4; i++)
+    tgt[i] = constrain(tgt[i], tservo[i].min, tservo[i].max);
+  while (!(done[0] && done[1] && done[2] && done[3])) {
+    for (int i = 0; i < 4; i++) {
+      if (done[i]) continue;
+      if (tservo[i].pos == tgt[i]) { done[i] = true; continue; }
+      tservo[i].pos += (tgt[i] > tservo[i].pos) ? 1 : -1;
+      tservo[i].servo.write(tservo[i].pos);
+    }
+    delay(sdelay);
+  }
+}
+
+void restart() {
+  move(90, 90, 90, 40);
+}
+
+void pick(char cmd) {
+  restart();                       
+  delay(200);
+  switch(cmd){
+    case 'A':
+    int tcmd_A[8][4]{
+    {40, 55, 120, 25},
+    {40, 95,  80, 25},
+    {40, 95,  80, 95},
+    {40, 50, 115, 95},
+    {130, 50, 115, 95},
+    {130, 90,  85, 95},
+    {130, 90,  85, 25},
+    {130, 55, 115, 25},
+    };
+    for(int i = 0 ; i < 8 ; i++){
+      move(tcmd_A[i][0],tcmd_A[i][1],tcmd_A[i][2],tcmd_A[i][3]);
+      delay(200);
+    }
+    break;
+    case 'B':
+    int tcmd_B[8][4]{
+    {80, 55, 120, 25},
+    {80, 95,  80, 25},
+    {80, 95,  80, 95},
+    {80, 50, 115, 95},
+    {60, 50, 115, 95},
+    {60, 90,  85, 95},
+    {60, 90,  85, 25},
+    {60, 55, 115, 25},
+    };
+    for(int i = 0 ; i < 8 ; i++){
+      move(tcmd_B[i][0],tcmd_B[i][1],tcmd_B[i][2],tcmd_B[i][3]);
+      delay(200);
+    }
+    break;
+    case 'C':
+    int tcmd_C[8][4]{
+    {120, 55, 120, 25},
+    {120, 95,  80, 25},
+    {120, 95,  80, 95},
+    {120, 50, 115, 95},
+    {100, 50, 115, 95},
+    {100, 90,  85, 95},
+    {100, 90,  85, 25},
+    {100, 55, 115, 25},
+    };
+    for(int i = 0 ; i < 8 ; i++){
+      move(tcmd_C[i][0],tcmd_C[i][1],tcmd_C[i][2],tcmd_C[i][3]);
+      delay(200);
+    }
+    break;
+    default:
+    Serial.println(F("// cmd error !!! //"));
+    break;
+  }
+  delay(200);
+  restart();
+}
