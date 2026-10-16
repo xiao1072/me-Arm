@@ -1,0 +1,135 @@
+#include<Servo.h>
+  Servo base,farm,rarm,claw;
+  const int bmax = 180;
+  const int bmin = 0;
+  const int formax = 130;
+  const int formin = 40;
+  const int rmax = 110;
+  const int rmin = 20;
+  const int cmax = 100;
+  const int cmin = 25;
+  int fpos,tpos;
+  int sdelay = 15;
+void setup() {
+  base.attach(11);
+  delay(200);
+  farm.attach(9);
+  delay(200);
+  rarm.attach(10);
+  delay(200);
+  claw.attach(5);
+  delay(200);
+  base.write(90);
+  delay(10);
+  farm.write(90);
+  delay(10);
+  rarm.write(90);
+  delay(10);
+  claw.write(90);
+  delay(10);
+  Serial.begin(9600);
+}
+
+void loop() {
+  if(Serial.available() > 0){
+    char sname = Serial.read();
+    if (sname == 'x' || sname == 'y' || sname == 'z' || sname == 'O' || sname == 'S' || sname == 'H' || sname == 'L')
+      work(sname, sdelay);
+  }
+  delay(200);
+}
+
+void work(char name,int sdelay){
+    switch(name){
+      case 'x':
+      tpos = Serial.parseInt();
+      if(tpos >= bmin && tpos <= bmax){
+        fpos = base.read();
+        if(tpos >= fpos){
+          for(int i = fpos;i <= tpos;i ++){
+            base.write(i);
+            delay(sdelay);
+          }
+        }
+        else{
+          for(int i = fpos;i >= tpos;i --){
+            base.write(i);
+            delay(sdelay);
+          }
+        }
+      }
+      else{
+        Serial.println("pos error!!");
+      }
+      break;
+      case 'y':
+      tpos = Serial.parseInt();
+      if(tpos >= rmin && tpos <= rmax){
+        fpos = rarm.read();
+        if(tpos >= fpos){
+          for(int i = fpos;i <= tpos;i ++){
+            rarm.write(i);
+            delay(sdelay);
+          }
+        }
+        else{
+          for(int i = fpos;i >= tpos;i --){
+            rarm.write(i);
+            delay(sdelay);
+          }
+        }
+      }
+      else{
+        Serial.println("pos error!!");
+      }
+      break;
+      case 'z':
+      tpos = Serial.parseInt();
+      if(tpos >= formin && tpos <= formax){
+        fpos = farm.read();
+        if(tpos >= fpos){
+          for(int i = fpos;i <= tpos;i ++){
+            farm.write(i);
+            delay(sdelay);
+          }
+        }
+        else{
+          for(int i = fpos;i >= tpos;i --){
+            farm.write(i);
+            delay(sdelay);
+          }
+        }
+      }
+      else{
+        Serial.println("pos error!!");
+      }
+      break;
+      case 'S':
+      fpos = claw.read();
+      for(int i = fpos;i <= cmax;i ++){
+        claw.write(i);
+        delay(sdelay);
+      }
+      break;
+      case 'O':
+      fpos = claw.read();
+      for(int i = fpos;i >= cmin;i --){
+        claw.write(i);
+        delay(sdelay);
+      }
+      break;
+      case 'H':
+      if(sdelay>5){
+        sdelay -= 5;
+      }
+      else{
+        Serial.println("I can't be slower!");
+      }
+      break;
+      case 'L':
+      sdelay += 5;
+      break;
+      default:
+      Serial.println("name error!!!");
+    }
+}
