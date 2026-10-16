@@ -1,0 +1,562 @@
+#include <Servo.h>
+
+// 摇杆1：底座 / 大臂 摇杆2：小臂 / 爪子
+// 按键1：单击：循环夹取A/B/C，双击：播放录制
+// 按键2：单击：录制开始/结束，双击：回中
+// 按键3：单击：画直线，双击：画V
+// 按键4：单击：示教打点/暂停继续，双击：结束示教画图/取消绘图
+
+const int pin_b = 11;
+const int pin_r = 10;
+const int pin_f = 9;
+const int pin_c = 5;
+const int button1 = 2;
+const int button2 = 4;
+const int button3 = 2;
+const int button4 = 4;
+
+struct jservo {
+  Servo servo;
+  int pin, min, max, pos;
+};
+
+jservo tservo[4] = {
+  {Servo(), pin_b, 0 , 180 , 90 },
+  {Servo(), pin_r, 20 , 160 , 90 },
+  {Servo(), pin_f, 20 , 160 , 90 },
+  {Servo(), pin_c, 10 , 120 , 40 },
+};
+
+int  rec_len = 0,rec_max = 250,rec_interval = 50;
+byte rec_b[250], rec_r[250], rec_f[250], rec_c[250];
+bool rec_state = false;
+unsigned long rec_time = 0;
+const int pickBase[3]  = { 40,  80, 120};
+const int placeBase[3] = {130,  60, 100};
+int x = 0;
+
+// ================= 新增全局变量 =================
+// 绘图状态机: 0=空闲, 1=直线, 2=画V, 3=折线, 4=曲线
+uint8_t draw_mode = 0;
+bool is_draw_mode = false; 
+bool draw_pause = false;   // 暂停标志
+uint8_t teach_n = 0;     // 示教点数
+int16_t teach_x[5];        // 示教X (用int16节省RAM)
+int16_t teach_y[5];        // 示教Y
+// 机械臂参数 (单位mm)
+const float arm_L1 = 78.0;
+const float arm_L2 = 68.0;
+
+const int pen_up = 40;
+const int pen_down = 115;
+// ================================================
+
+void mod_check() {
+  if (Serial.available() > 0) {
+    char c = Serial.read();
+    if (c == 'M' || c == 'm') {
+      // 切换模式前确保机械臂处于安全状态
+      if (draw_mode > 0) { 
+        draw_mode = 0; draw_pause = false; pen_pick(); 
+      }
+      if (rec_state) { 
+        rec_state = false; rec_len = 0;
+      }
+      
+      is_draw_mode = !is_draw_mode;
+      restart();
+      
+      Serial.print(F("// 系统已切换至 "));
+      if (!is_draw_mode) {
+        Serial.println(F("模式1 (夹取/录制) //"));
+        Serial.println(F("// 按键1: 单击:夹取A/B/C循环  双击:播放录制 //"));
+        Serial.println(F("// 按键2: 单击:录制开始/结束  双击:回中 //"));
+      } else {
+        Serial.println(F("模式2 (绘图/示教) //"));
+        Serial.println(F("// 按键3: 单击:画直线  双击:画V //"));
+        Serial.println(F("// 按键4: 单击:示教打点/暂停继续  双击:结束示教/取消绘图 //"));
+      }
+    }
+  }
+}
+
+void move(int b, int r, int f, int c, int sdelay = 15) {
+  int topos[4] = {b, r, f, c};
+  bool done[4] = {false, false, false, false};
+  for (int i = 0; i < 4; i++)
+    topos[i] = constrain(topos[i], tservo[i].min, tservo[i].max);
+  while (!(done[0] && done[1] && done[2] && done[3])) {
+    if (draw_mode > 0) {
+      if (draw_read()) return; 
+    }
+    for (int i = 0; i < 4; i++) {
+      if (done[i]) continue;
+      if (tservo[i].pos == topos[i]) { done[i] = true; continue; }
+      tservo[i].pos += (topos[i] > tservo[i].pos) ? 1 : -1;
+      tservo[i].servo.write(tservo[i].pos);
+    }
+    delay(sdelay);
+  }
+}
+
+void restart() {
+  move(90, 90, 90, pen_up);
+}
+
+int read_tap(int pin) {
+  if (digitalRead(pin) != LOW) return 0;
+  delay(20);
+  if (digitalRead(pin) != LOW) return 0;
+  while (digitalRead(pin) == LOW);
+  delay(20);
+  unsigned long t0 = millis();
+  while (millis() - t0 < 500) {
+    if (digitalRead(pin) == LOW) {
+      delay(20);
+      if (digitalRead(pin) == LOW) {
+        while (digitalRead(pin) == LOW);
+        return 2;
+      }
+    }
+  }
+  return 1;
+}
+
+bool read(int pin) {
+  if (digitalRead(pin) == LOW) {
+    delay(20);
+    if (digitalRead(pin) == LOW) {
+      while (digitalRead(pin) == LOW);
+      return true;
+    }
+  }
+  return false;
+}
+
+void pick(int x) {
+  int fb = pickBase[x], tb = placeBase[x];
+  restart();                       
+  delay(200);
+  move(fb, 55 , 120 , 25 );
+  delay(200);
+  move(fb, 55 , 120 , 95 );
+  delay(200);
+  move(fb, 95 ,  85 , 95 );
+  delay(200);
+  move(tb, 95 ,  85 , 95 );
+  delay(200);
+  move(tb, 55 , 120 , 95 );
+  delay(200);
+  move(tb, 55 , 120 , 25 );
+  delay(200);
+  restart();
+}
+
+void joy_control() {
+  int rocker[4] = {analogRead(A0), analogRead(A1),analogRead(A2), analogRead(A3)};
+  for (int i = 0; i < 4; i++) {
+    int d = rocker[i] - 512;
+    if (abs(d) > 60) {
+      int speed = map(abs(d), 60, 512, 1, 4);
+      tservo[i].pos = constrain(tservo[i].pos + (d > 0 ? speed : -speed),tservo[i].min, tservo[i].max);
+      tservo[i].servo.write(tservo[i].pos);
+      delay(20);
+    }
+  }
+}
+
+void rec_start() {
+  rec_len = 0;
+  rec_state = true;
+  rec_time = millis();
+  Serial.println(F("// 录制开始，请用摇杆操控机械臂（>10秒),再按按键2结束 //"));
+}
+
+void rec_stop() {
+  rec_state = false;
+  unsigned long d = millis() - rec_time;
+  if (d < 10000) {
+    Serial.println(F("// 录制不足10秒,请重新录制 !!! //"));
+    rec_len = 0;
+  } 
+  else {
+    Serial.print(F("// 录制结束，共 "));
+    Serial.print(rec_len);
+    Serial.print(F(" 次，共 "));
+    Serial.print(d / 1000);
+    Serial.println(F(" 秒,录制成功 //"));
+  }
+}
+
+void rec_play() {
+  if (rec_len == 0) {
+    Serial.println(F("// 没有可播放的录制数据，请先录制！ //"));
+    return;
+  }
+  Serial.println(F("// 开始播放 ps:播放中按按键2可中断回中 //"));
+  for (int i = 0; i < rec_len; i++) {
+    tservo[0].pos = rec_b[i];
+    tservo[0].servo.write(rec_b[i]);
+    tservo[1].pos = rec_r[i];
+    tservo[1].servo.write(rec_r[i]);
+    tservo[2].pos = rec_f[i];
+    tservo[2].servo.write(rec_f[i]);
+    tservo[3].pos = rec_c[i];
+    tservo[3].servo.write(rec_c[i]);
+    delay(rec_interval);
+    if (digitalRead(button2) == LOW) {
+      delay(20);
+      if (digitalRead(button2) == LOW) {
+        while (digitalRead(button2) == LOW);
+        restart();
+        Serial.println(F("// 已中断并回中 //"));
+        return;
+      }
+    }
+  }
+  Serial.println(F("// 播放完毕 //"));
+}
+
+// ================= 新增绘图核心函数 =================
+
+// 逆运动学：将笛卡尔坐标(x,y)转换为舵机角度(b,r,f)
+// 原点位于底座旋转中心正下方纸面，x向前，y向左
+bool draw_check(float tx, float ty, int &ang_b, int &ang_r, int &ang_f) {
+  float r_sq = tx * tx + ty * ty;
+  float dist = sqrt(r_sq);
+  // 检查是否超出工作半径
+  if (dist > (arm_L1 + arm_L2 - 2) || dist < arm_L1 - arm_L2 + 2) return false;
+  
+  // 余弦定理求关节角
+  float cos_afa = (r_sq + arm_L1 * arm_L1 - arm_L2 * arm_L2) / (2.0 * arm_L1 * dist);
+  cos_afa = constrain(cos_afa, -1.0, 1.0);
+  float afa = acos(cos_afa);
+  
+  float base_pos = atan2(ty, tx);
+  float theta1 = base_pos + afa; // 大臂相对水平线角度
+  
+  // 小臂相对大臂的角度
+  float cos_beta = (arm_L1 * arm_L1 + arm_L2 * arm_L2 - r_sq) / (2.0 * arm_L1 * arm_L2);
+  cos_beta = constrain(cos_beta, -1.0, 1.0);
+  float beta = acos(cos_beta);
+  float theta2 = PI - beta; // 肘部内角
+  
+  // 转换为舵机PWM角度 (根据meArm结构标定)
+  // 底座: 0-180映射, 90为正前方
+  ang_b = (int)(90.0 - degrees(base_pos)); 
+  // 大臂: 假设0度为水平前伸, 90度为垂直向上
+  ang_r = (int)(degrees(theta1)); 
+  // 小臂: 补偿大臂角度使末端水平或特定姿态
+  ang_f = (int)(degrees(theta1 + theta2)); 
+  
+  if (ang_b < tservo[0].min || ang_b > tservo[0].max) return false;
+  if (ang_r < tservo[1].min || ang_r > tservo[1].max) return false;
+  if (ang_f < tservo[2].min || ang_f > tservo[2].max) return false;
+  return true;
+}
+
+// 移动笔尖到指定坐标，step_mm控制插值精度
+bool pen_move_to(float tx, float ty, float step_mm = 2.0) {
+  int b, r, f;
+  if (!draw_check(tx, ty, b, r, f)) {
+    Serial.println(F("// 求解失败,坐标超界 //"));
+    return false;
+  }
+  move(b, r, f, tservo[3].pos, 10); 
+  return true;
+}
+
+void pen_put() {
+  move(tservo[0].pos, tservo[1].pos, tservo[2].pos, pen_down); 
+}
+
+void pen_pick() {
+  move(tservo[0].pos, tservo[1].pos, tservo[2].pos, pen_up); 
+}
+
+// 检查绘图过程中的暂停/取消，返回true表示需要退出当前绘图
+bool draw_read() {
+  // 按键4单击：暂停/继续切换
+  if (read(button4)) {
+    draw_pause = !draw_pause;
+    if (draw_pause) {
+      Serial.println(F("// 绘图已暂停,按按键4继续 //"));
+      while (draw_pause) {
+        // 等待继续或取消
+        if (read(button4)) { 
+          draw_pause = false; 
+          Serial.println(F("// 继续绘图 //"));
+        }
+        if (read_tap(button4) == 2) {
+          draw_mode = 0;
+          draw_pause = false;
+          pen_pick();
+          restart();
+          Serial.println(F("// 绘图已取消，回中待机 //"));
+          return true;
+        }
+        delay(20);
+      }
+    }
+  }
+  // 按键4双击：直接取消
+  if (read_tap(button4) == 2) {
+    draw_mode = 0;
+    draw_pause = false;
+    pen_pick();
+    restart();
+    Serial.println(F("// 绘图已取消，回待机 //"));
+    return true;
+  }
+  return false;
+}
+
+// 线性插值绘图
+void draw_line_seg(float x0, float y0, float x1, float y1, float step = 2.0) {
+  float dx = x1 - x0, dy = y1 - y0;
+  float dist = sqrt(dx*dx + dy*dy);
+  int steps = (int)(dist / step);
+  if (steps < 1) steps = 1;
+  for (int i = 0; i <= steps; i++) {
+    if (draw_read()) return;
+    float t = (float)i / steps;
+    pen_move_to(x0 + dx * t, y0 + dy * t, step);
+  }
+}
+
+// Catmull-Rom样条插值 (用于平滑曲线) ？？？
+void draw_catmull_rom(float p0x, float p0y, float p1x, float p1y, 
+                      float p2x, float p2y, float p3x, float p3y, int segs = 20) {
+  for (int i = 0; i <= segs; i++) {
+    if (draw_read()) return;
+    float t = (float)i / segs;
+    float t2 = t * t, t3 = t2 * t;
+    float q0 = -0.5*t3 + t2 - 0.5*t;
+    float q1 =  1.5*t3 - 2.5*t2 + 1.0;
+    float q2 = -1.5*t3 + 2.0*t2 + 0.5*t;
+    float q3 =  0.5*t3 - 0.5*t2;
+    float px = q0*p0x + q1*p1x + q2*p2x + q3*p3x;
+    float py = q0*p0y + q1*p1y + q2*p2y + q3*p3y;
+    pen_move_to(px, py, 2.0);
+  }
+}
+
+void task_draw_line() {
+  Serial.println(F("// 开始绘制直线 //"));
+  pen_pick();
+  pen_move_to(80, -20);
+  pen_put();
+  draw_line_seg(80, -20, 80, 20);
+  pen_pick();
+  restart();
+  draw_mode = 0;
+  Serial.println(F("// 直线绘制完成 //"));
+}
+
+void task_draw_v() {
+  Serial.println(F("// 开始绘制字母V //"));
+  pen_pick();
+  pen_move_to(70, -20);
+  pen_put();
+  draw_line_seg(70, -20, 90, 20);  // V左斜线
+  draw_line_seg(90, 20, 110, -20); // V右斜线
+  pen_pick();
+  restart();
+  draw_mode = 0;
+  Serial.println(F("// V绘制完成 //"));
+}
+
+void task_draw_polyline() {
+  Serial.println(F("// 开始绘制五点折线 //"));
+  pen_pick();
+  restart();
+  delay(300);
+  pen_move_to(teach_x[0], teach_y[0]);
+  pen_put();
+  for (int i = 1; i < 5; i++) {
+    if (draw_read()) return;
+    draw_line_seg(teach_x[i-1], teach_y[i-1], teach_x[i], teach_y[i]);
+  }
+  pen_pick();
+  restart();
+  draw_mode = 0;
+  Serial.println(F("// 折线绘制完成 //"));
+}
+
+void task_draw_curve() {
+  Serial.println(F("// 开始绘制五点平滑曲线 //"));
+  pen_pick();
+  restart();
+  delay(300);
+  pen_move_to(teach_x[0], teach_y[0]);
+  pen_put();
+  // Catmull-Rom需要首尾虚拟点，这里用端点复制
+  draw_catmull_rom(teach_x[0], teach_y[0], teach_x[0], teach_y[0], 
+                   teach_x[1], teach_y[1], teach_x[2], teach_y[2], 25);
+  draw_catmull_rom(teach_x[0], teach_y[0], teach_x[1], teach_y[1], 
+                   teach_x[2], teach_y[2], teach_x[3], teach_y[3], 25);
+  draw_catmull_rom(teach_x[1], teach_y[1], teach_x[2], teach_y[2], 
+                   teach_x[3], teach_y[3], teach_x[4], teach_y[4], 25);
+  draw_catmull_rom(teach_x[2], teach_y[2], teach_x[3], teach_y[3], 
+                   teach_x[4], teach_y[4], teach_x[4], teach_y[4], 25);
+  pen_pick();
+  restart();
+  draw_mode = 0;
+  Serial.println(F("// 曲线绘制完成 //"));
+}
+
+// 正向运动学：根据当前舵机角度估算笔尖XY (用于示教记录) ???
+void fk_current(float &ox, float &oy) {
+  float a1 = radians(tservo[1].pos);
+  float a2 = radians(tservo[2].pos - tservo[1].pos);
+  float a0 = radians(90 - tservo[0].pos);
+  float px = arm_L1 * cos(a1) + arm_L2 * cos(a1 + a2);
+  float py = arm_L1 * sin(a1) + arm_L2 * sin(a1 + a2);
+  // 旋转到底座坐标系
+  ox = px * cos(a0) - py * sin(a0);
+  oy = px * sin(a0) + py * cos(a0);
+}
+// ===================================================
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(button1, INPUT_PULLUP);
+  pinMode(button2, INPUT_PULLUP);
+  pinMode(button3, INPUT_PULLUP);
+  pinMode(button4, INPUT_PULLUP);
+
+  for (int i = 0; i < 4; i++) {
+    tservo[i].servo.attach(tservo[i].pin);
+    tservo[i].servo.write(tservo[i].pos);
+    delay(20);
+  }
+  delay(200);
+  restart();
+  Serial.println(F("// 按键1: 单击:夹取A/B/C循环  双击:播放录制 //"));
+  Serial.println(F("// 按键2: 单击:录制开始/结束  双击:回中 //"));
+  Serial.println(F("// 按键3: 单击:画直线  双击:画V //"));
+  Serial.println(F("// 按键4: 单击:示教打点/暂停继续  双击:结束示教/取消绘图 //"));
+}
+
+void loop() {
+  mod_check();
+  if(!is_draw_mode){
+    if (rec_state) {
+      joy_control();
+      if (millis() - rec_time >= rec_len * rec_interval && rec_len < rec_max) {
+        rec_b[rec_len] = tservo[0].pos;
+        rec_r[rec_len] = tservo[1].pos;
+        rec_f[rec_len] = tservo[2].pos;
+        rec_c[rec_len] = tservo[3].pos;
+        rec_len++;
+      }
+      if (read(button2)) rec_stop();
+      return;
+    }
+    int b1 = read_tap(button1);
+    if (b1 == 1) {
+      Serial.print(F("//夹取物体"));
+      Serial.println((char)('A' + x));
+      pick(x);
+      x = (x + 1) % 3;
+    } 
+    else if (b1 == 2) {
+      rec_play();
+    }
+
+    int b2 = read_tap(button2);
+    if (b2 == 1) {
+      rec_start();
+    } 
+    else if (b2 == 2) {
+      restart();
+      Serial.println(F("// 已回中 //"));
+    }
+    return;
+  }
+
+  if (draw_mode == 1) {
+    task_draw_line();
+    return;
+    }
+  if (draw_mode == 2) {
+    task_draw_v();
+    return;
+    }
+  if (draw_mode == 3) {
+    task_draw_polyline();
+    return;
+    }
+  if (draw_mode == 4) {
+    task_draw_curve();
+    return;
+    }
+
+  // === 五点示教模式 ===
+  static bool teach_mode = false;
+  if (teach_mode) {
+    joy_control();
+    // 按键4单击：记录当前点
+    if (read(button4)) {
+      if (teach_n < 5) {
+        float fx, fy;
+        fk_current(fx, fy);
+        teach_x[teach_n] = (int16_t)fx;
+        teach_y[teach_n] = (int16_t)fy;
+        teach_n++;
+        Serial.print(F("// 示教点 "));
+        Serial.print(teach_n);
+        Serial.print(F(" 已记录 X="));
+        Serial.print((int)fx);
+        Serial.print(F(" Y="));
+        Serial.println((int)fy);
+      }
+      if (teach_n >= 5) {
+        Serial.println(F("// 5点已齐，按按键4双击选择绘制模式 //"));
+      }
+    }
+    
+    // 按键4双击：结束示教，选择绘制类型
+    if (read_tap(button4) == 2) {
+      teach_mode = false;
+      if (teach_n >= 5) {
+        Serial.println(F("// 请选择: 按键3单击=折线, 按键3双击=曲线 //"));
+        // 等待用户选择
+        while (true) {
+          int sel = read_tap(button3);
+          if (sel == 1) { draw_mode = 3; break; }
+          if (sel == 2) { draw_mode = 4; break; }
+          // 按键2双击可放弃本次示教
+          if (read_tap(button2) == 2) { 
+            teach_n = 0; 
+            Serial.println(F("// 已放弃示教 //"));
+            break; 
+          }
+          delay(50);
+        }
+      } else {
+        Serial.println(F("// 示教点不足5个，已清除 //"));
+        teach_n = 0;
+      }
+    }
+  }
+  
+  // 按键3处理
+  int b3 = read_tap(button3);
+  if (b3 == 1) {
+    draw_mode = 1; // 画直线
+  } else if (b3 == 2) {
+    draw_mode = 2; // 画V
+  }
+  
+  // 按键4处理 (非示教模式下)
+  int b4 = read_tap(button4);
+  if (b4 == 1) {
+    // 进入五点示教模式
+    teach_mode = true;
+    teach_n = 0;
+    Serial.println(F("// 进入五点示教模式，请用摇杆移动笔尖到目标点 //"));
+    Serial.println(F("// 按按键4单击记录点，双击结束示教 //"));
+  }
+  // b4双击在非绘图/非示教模式下无操作
+}
