@@ -1,0 +1,213 @@
+#include <Servo.h>
+
+const int pin_b = 11;
+const int pin_r = 10;
+const int pin_f = 9;
+const int pin_c = 5;
+const int button1 = 2;
+const int button2 = 4;
+
+struct jservo {
+  Servo servo;
+  int pin, min, max, pos;
+};
+
+jservo tservo[4] = {
+  {Servo(), pin_b, 0 , 180 , 90 },
+  {Servo(), pin_r, 20 , 160 , 90 },
+  {Servo(), pin_f, 20 , 160 , 90 },
+  {Servo(), pin_c, 10 , 120 , 40 },
+};
+
+int  rec_len = 0,rec_max = 250,rec_interval = 50;
+byte rec_b[250], rec_r[250], rec_f[250], rec_c[250];
+bool rec_state = false;
+unsigned long rec_time = 0;
+const int pickBase[3]  = { 40,  80, 120};
+const int placeBase[3] = {130,  60, 100};
+int x = 0;
+
+void move(int b, int r, int f, int c, int sdelay = 15) {
+  int topos[4] = {b, r, f, c};
+  bool done[4] = {false, false, false, false};
+  for (int i = 0; i < 4; i++)
+    topos[i] = constrain(topos[i], tservo[i].min, tservo[i].max);
+  while (!(done[0] && done[1] && done[2] && done[3])) {
+    for (int i = 0; i < 4; i++) {
+      if (done[i]) continue;
+      if (tservo[i].pos == topos[i]) { done[i] = true; continue; }
+      tservo[i].pos += (topos[i] > tservo[i].pos) ? 1 : -1;
+      tservo[i].servo.write(tservo[i].pos);
+    }
+    delay(sdelay);
+  }
+}
+
+void restart() {
+  move(90, 90, 90, 40);
+}
+
+int read_tap(int pin) {
+  if (digitalRead(pin) != LOW) return 0;
+  delay(20);
+  if (digitalRead(pin) != LOW) return 0;
+  while (digitalRead(pin) == LOW);
+  delay(20);
+  unsigned long t0 = millis();
+  while (millis() - t0 < 500) {
+    if (digitalRead(pin) == LOW) {
+      delay(20);
+      if (digitalRead(pin) == LOW) {
+        while (digitalRead(pin) == LOW);
+        return 2;
+      }
+    }
+  }
+  return 1;
+}
+
+bool read(int pin) {
+  if (digitalRead(pin) == LOW) {
+    delay(20);
+    if (digitalRead(pin) == LOW) {
+      while (digitalRead(pin) == LOW);
+      return true;
+    }
+  }
+  return false;
+}
+
+void pick(int x) {
+  int fb = pickBase[x], tb = placeBase[x];
+  restart();                       
+  delay(200);
+  move(fb, 120 , 55 , 25 );
+  delay(200);
+  move(fb, 120 , 55 , 115 );
+  delay(200);
+  move(fb, 85 ,  95 , 115 );
+  delay(200);
+  move(tb, 85 ,  95 , 115 );
+  delay(200);
+  move(tb, 120 , 55 , 115 );
+  delay(200);
+  move(tb, 120 , 55 , 25 );
+  delay(200);
+  restart();
+}
+
+void joy_control() {
+  int rocker[4] = {analogRead(A0), analogRead(A1),analogRead(A2), analogRead(A3)};
+  for (int i = 0; i < 4; i++) {
+    int d = rocker[i] - 512;
+    if (abs(d) > 60) {
+      int speed = map(abs(d), 60, 512, 1, 4);
+      tservo[i].pos = constrain(tservo[i].pos + (d > 0 ? speed : -speed),tservo[i].min, tservo[i].max);
+      tservo[i].servo.write(tservo[i].pos);
+      delay(20);
+    }
+  }
+}
+
+void rec_start() {
+  rec_len = 0;
+  rec_state = true;
+  rec_time = millis();
+  Serial.println(F("// 录制开始，请用摇杆操控机械臂（>10秒),再按按键2结束 //"));
+}
+
+void rec_stop() {
+  rec_state = false;
+  unsigned long d = millis() - rec_time;
+  if (d < 10000) {
+    Serial.println(F("// 录制不足10秒,请重新录制 !!! //"));
+    rec_len = 0;
+  } 
+  else {
+    Serial.print(F("// 录制结束，共 "));
+    Serial.print(rec_len);
+    Serial.print(F(" 次，共 "));
+    Serial.print(d / 1000);
+    Serial.println(F(" 秒,录制成功 //"));
+  }
+}
+
+void rec_play() {
+  if (rec_len == 0) {
+    Serial.println(F("// 没有可播放的录制数据，请先录制！ //"));
+    return;
+  }
+  Serial.println(F("// 开始播放 ps:播放中按按键2可中断回中 //"));
+  for (int i = 0; i < rec_len; i++) {
+    tservo[0].pos = rec_b[i];
+    tservo[0].servo.write(rec_b[i]);
+    tservo[1].pos = rec_r[i];
+    tservo[1].servo.write(rec_r[i]);
+    tservo[2].pos = rec_f[i];
+    tservo[2].servo.write(rec_f[i]);
+    tservo[3].pos = rec_c[i];
+    tservo[3].servo.write(rec_c[i]);
+    delay(rec_interval);
+    if (digitalRead(button2) == LOW) {
+      delay(20);
+      if (digitalRead(button2) == LOW) {
+        while (digitalRead(button2) == LOW);
+        restart();
+        Serial.println(F("// 已中断并回中 //"));
+        return;
+      }
+    }
+  }
+  Serial.println(F("// 播放完毕 //"));
+}
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(button1, INPUT_PULLUP);
+  pinMode(button2, INPUT_PULLUP);
+
+  for (int i = 0; i < 4; i++) {
+    tservo[i].servo.attach(tservo[i].pin);
+    tservo[i].servo.write(tservo[i].pos);
+    delay(20);
+  }
+  delay(200);
+  restart();
+  Serial.println(F("// 按键1: 单击:夹取A/B/C循环  双击:播放录制 //"));
+  Serial.println(F("// 按键2: 单击:录制开始/结束  双击:回中 //"));
+}
+
+void loop() {
+  if (rec_state) {
+    joy_control();
+    if (millis() - rec_time >= rec_len * rec_interval && rec_len < rec_max) {
+      rec_b[rec_len] = tservo[0].pos;
+      rec_r[rec_len] = tservo[1].pos;
+      rec_f[rec_len] = tservo[2].pos;
+      rec_c[rec_len] = tservo[3].pos;
+      rec_len++;
+    }
+    if (read(button2)) rec_stop();
+    return;
+  }
+
+  int b1 = read_tap(button1);
+  if (b1 == 1) {
+    Serial.print(F("//夹取物体"));
+    Serial.println((char)('A' + x));
+    pick(x);
+    x = (x + 1) % 3;
+  } 
+  else if (b1 == 2) {
+    rec_play();
+  }
+
+  int b2 = read_tap(button2);
+  if (b2 == 1) {
+    rec_start();
+  } 
+  else if (b2 == 2) {
+    restart();
+    Serial.println(F("// 已回中 //"));
+  }
+}
