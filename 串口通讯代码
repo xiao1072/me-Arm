@@ -1,0 +1,224 @@
+#include<Servo.h>
+  const int bmax = 180;
+  const int bmin = 0;
+  const int formax = 160;
+  const int formin = 20;
+  const int rmax = 160;
+  const int rmin = 20;
+  const int cmax = 120;
+  const int cmin = 20;
+  const int pin_b = 11;
+  const int pin_r = 10;
+  const int pin_f = 9;
+  const int pin_c = 5;
+  int sdelay = 15,fpos,tpos;
+  bool mod = 0; 
+  struct jservo {
+  Servo servo;
+  int pin, min, max, pos;
+  };
+
+jservo tservo[4] = {
+  {Servo(), pin_b, 0 , 180 , 90 },
+  {Servo(), pin_r, 20 , 160 , 90 },
+  {Servo(), pin_f, 20 , 160 , 90 },
+  {Servo(), pin_c, 20 , 120 , 40 },
+  };
+void setup() {
+  for (int i = 0; i < 4; i++) {
+    tservo[i].servo.attach(tservo[i].pin);
+    delay(200);
+    tservo[i].servo.write(tservo[i].pos);
+    delay(10);
+  }
+  delay(20);
+  restart();
+  Serial.begin(9600);
+}
+
+void loop() {
+  if(Serial.available() > 0){
+    char cmd = Serial.read();
+    if(mod){
+        pick(cmd);
+    }
+    else{
+        work(cmd);
+    }
+  }
+  delay(200);
+}
+
+void mod_turn(){
+  if(mod){
+    mod = 0;
+    Serial.println("// 已切换为操控模式 //");
+  }
+  else{
+    mod = 1;
+    Serial.println("// 已切换为抓取模式 //");
+  }
+}
+
+void move(int b, int r, int f, int c) {
+  int topos[4] = {b, r, f, c};
+  bool done[4] = {false, false, false, false};
+  for (int i = 0; i < 4; i++)
+    topos[i] = constrain(topos[i], tservo[i].min, tservo[i].max);
+  while (!(done[0] && done[1] && done[2] && done[3])) {
+    for (int i = 0; i < 4; i++) {
+      if (done[i]) continue;
+      if (tservo[i].pos == topos[i]) { done[i] = true; continue; }
+      tservo[i].pos += (topos[i] > tservo[i].pos) ? 1 : -1;
+      tservo[i].servo.write(tservo[i].pos);
+    }
+    delay(sdelay);
+  }
+}
+
+void work(char cmd){
+    switch(cmd){
+      case 'x':
+        tpos = Serial.parseInt();
+        if(tpos >= bmin && tpos <= bmax){
+          fpos = tservo[0].pos;
+          for(int i = fpos; i != tpos; i += (tpos>fpos)?1:-1){
+            tservo[0].servo.write(i);
+            delay(sdelay);
+          }
+          tservo[0].pos = tpos;
+        }
+        Serial.print("x = ");
+        Serial.println(tpos);
+        break;
+      case 'y':
+        tpos = Serial.parseInt();
+        if(tpos >= bmin && tpos <= bmax){
+          fpos = tservo[1].pos;
+          for(int i = fpos; i != tpos; i += (tpos>fpos)?1:-1){
+            tservo[1].servo.write(i);
+            delay(sdelay);
+          }
+          tservo[1].pos = tpos;
+        }
+        Serial.print("y = ");
+        Serial.println(tpos);
+        break;
+      case 'z':
+        tpos = Serial.parseInt();
+        if(tpos >= bmin && tpos <= bmax){
+          fpos = tservo[2].pos;
+          for(int i = fpos; i != tpos; i += (tpos>fpos)?1:-1){
+            tservo[2].servo.write(i);
+            delay(sdelay);
+          }
+          tservo[2].pos = tpos;
+        }
+        Serial.print("z = ");
+        Serial.println(tpos);
+        break;
+      case 'S':
+        fpos = tservo[3].servo.read();
+        for(int i = fpos;i <= cmax;i ++){
+          tservo[3].servo.write(i);
+          delay(sdelay);
+        }
+        break;
+      case 'O':
+        fpos = tservo[3].servo.read();
+        for(int i = fpos;i >= cmin;i --){
+          tservo[3].servo.write(i);
+          delay(sdelay);
+        }
+        break;
+      case 'H':
+        if(sdelay>5){
+          sdelay -= 5;
+        }
+        else{
+          Serial.println("I can't be slower!");
+        }
+        break;
+      case 'L':
+        sdelay += 5;
+        break;
+      case 'M':
+        mod_turn();
+        break;
+      case 'R':
+        restart();
+        break;
+      default:
+        while(Serial.available() > 0) char clear = Serial.read();
+        Serial.println("// 当前为操控模式,请输入 'x+pos' 'y+pos' 'z+pos' 'O' 'S' 'H' 'L' //");
+        Serial.println("// 切换模式请输入'M' //");
+    }
+}
+
+void restart() {
+  move(90, 90, 90, 40);
+}
+
+void pick(char cmd) {
+  restart();                       
+  delay(200);
+  switch(cmd){
+    case 'A':{
+      int tcmd_A[6][4]{
+      { 40, 120, 55, 25},
+      { 40, 120, 55, 115},
+      { 40,  85, 95, 115},
+      {130,  85, 95, 115},
+      {130, 120, 55, 115},
+      {130, 120, 55, 25},
+      };
+      for(int i = 0 ; i < 6 ; i++){
+        move(tcmd_A[i][0],tcmd_A[i][1],tcmd_A[i][2],tcmd_A[i][3]);
+        delay(200);
+      }
+      break;
+    }
+    case 'B':{
+      int tcmd_B[6][4]{
+      {80, 120, 55, 25},
+      {80, 120, 55, 115},
+      {80, 85, 95, 115},
+      {60, 85, 95, 115},
+      {60, 120, 55, 115},
+      {60, 120, 55, 25},
+      };
+      for(int i = 0 ; i < 6 ; i++){
+        move(tcmd_B[i][0],tcmd_B[i][1],tcmd_B[i][2],tcmd_B[i][3]);
+        delay(200);
+      }
+      break;
+    }
+    case 'C':{
+      int tcmd_C[6][4]{
+      {120, 120, 55, 25},
+      {120, 120, 55, 115},
+      {120, 85, 95, 115},
+      {100, 85, 95, 115},
+      {100, 120, 55, 115},
+      {100, 120, 55, 25},
+      };
+      for(int i = 0 ; i < 6 ; i++){
+        move(tcmd_C[i][0],tcmd_C[i][1],tcmd_C[i][2],tcmd_C[i][3]);
+        delay(200);
+      }
+      break;
+    }
+    case 'M':
+      mod_turn();
+      break;
+    case 'R':
+      restart();
+      break;
+    default:
+      while(Serial.available() > 0) char clear = Serial.read();
+      Serial.println("// 当前为抓取模式,请输入 'A' 'B' 'C' //");
+      Serial.println("// 切换模式请输入'M' //");
+      break;
+  }
+  restart();
+}
